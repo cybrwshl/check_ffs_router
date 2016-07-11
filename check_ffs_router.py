@@ -49,11 +49,12 @@ class FfsRouterContext(nagiosplugin.Context):
 
 def main():
   argp = argparse.ArgumentParser()
-  argp.add_argument('-u', '--url', help='where to get status json from')
-  argp.add_argument('-n', '--name', help='router to check')
-  argp.add_argument('-w', '--warning', metavar='RANGE', default='40',
+  required = argp.add_argument_group('required named arguments')
+  required.add_argument('-u', '--url', help='where to get status json from', required=True)
+  required.add_argument('-n', '--name', help='router to check', required=True)
+  argp.add_argument('-w', '--warning', metavar='RANGE', default='40', type=int,
                     help='return warning if clients is outside RANGE')
-  argp.add_argument('-c', '--critical', metavar='RANGE', default='50',
+  argp.add_argument('-c', '--critical', metavar='RANGE', default='50', type=int,
                     help='return critical if clients load is outside RANGE')
   args = argp.parse_args()
 
