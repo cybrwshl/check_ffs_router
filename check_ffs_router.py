@@ -18,13 +18,17 @@ from datetime import datetime
 TEMP_DIR  = tempfile.gettempdir()
 JSON_FILE_PATH = os.path.join(TEMP_DIR, 'ffs-nodes.json')
 
+JSON_URLS = [
+  'http://hg.albi.info/json/nodes.json', 
+  'http://netinfo.freifunk-stuttgart.de/json/nodesdb.json'
+]
+
 DEFAULT_CHECK_INTERVAL      = 5  # minutes
 DEFAULT_FILE_ACCESS_TIMEOUT = 1  # minutes
 
 
 class FfsRouterStatus(nagiosplugin.Resource):
-  def __init__(self, url, router_name):
-    self.url = url
+  def __init__(self, router_name):
     self.router_name = router_name
 
   def get_json(self):
@@ -37,18 +41,29 @@ class FfsRouterStatus(nagiosplugin.Resource):
         with open(JSON_FILE_PATH) as json_file:
           return json_file.read()
 
+    download_successfull=False
+
     # file is too old or does not exist
     with open(JSON_FILE_PATH, 'wb') as json_file:
-      #portalocker.lock(json_file, portalocker.LOCK_EX)
-      response = requests.get(self.url, stream=True)
+      for json_url in JSON_URLS:
+        #portalocker.lock(json_file, portalocker.LOCK_EX)
+        try:
+          response = requests.get(json_url, stream=True, timeout=5)
+          response.raise_for_status()
+          download_successfull=True
+        except requests.exceptions.Timeout:
+          continue
+        except requests.RequestException as e:
+          raise nagiosplugin.CheckError(e)
 
-      try:
-        response.raise_for_status()
-      except requests.RequestException as e:
-        raise nagiosplugin.CheckError(e)
+      if not download_successfull:
+        raise nagiosplugin.CheckError('Download failed!')
 
       for block in response.iter_content(1024):
         json_file.write(block)
+
+    if os.stat(JSON_FILE_PATH).st_size == 0:
+      raise nagiosplugin.CheckError('Empty JSON file!')
 
     with open(JSON_FILE_PATH) as json_file:
       return json_file.read()
@@ -59,24 +74,16 @@ class FfsRouterStatus(nagiosplugin.Resource):
     except json.JSONDecodeError as e:
       raise nagiosplugin.CheckError(e)
 
-    for router in json_content['nodes']:
+    #for router in json_content['nodes']:
+    for router_mac in json_content:
+      router = json_content[router_mac]
 
-      # software, network, location, node_id, hostname, hardware
-      nodeinfo = router['nodeinfo']
+      if self.router_name == router['hostname']:
+        yield nagiosplugin.Metric('online', (router['status'], 
+            router['hostname'], router_mac))
 
-      # online, uplink
-      flags = router['flags']
-
-      # memory_usage, rootfs_usage, wireless, gateway_nexthop, clients,
-      # loadavg, gateway, uptime
-      statistics = router['statistics']
-
-      if self.router_name == nodeinfo['hostname']:
-        yield nagiosplugin.Metric('online', (flags['online'], 
-            nodeinfo['hostname'], nodeinfo['node_id']))
-
-        if flags['online'] == 'true':
-          yield nagiosplugin.Metric('clients', statistics['clients'], min=0)
+        if router['status'] == 'online':
+          yield nagiosplugin.Metric('clients', router['clients']['total'], min=0)
         return
 
 
@@ -97,8 +104,6 @@ class FfsRouterContext(nagiosplugin.Context):
 def main():
   argp = argparse.ArgumentParser()
   required = argp.add_argument_group('required named arguments')
-  required.add_argument('-u', '--url', help='where to get status json from', 
-          required=True)
   required.add_argument('-n', '--name', help='router to check', required=True)
   argp.add_argument('-w', '--warning', metavar='RANGE', default='40', type=int, 
           help='return warning if clients is outside RANGE')
@@ -107,7 +112,7 @@ def main():
   args = argp.parse_args()
 
   check = nagiosplugin.Check(
-    FfsRouterStatus(args.url, args.name),
+    FfsRouterStatus(args.name),
     FfsRouterContext('online'),
     nagiosplugin.ScalarContext('clients', args.warning, args.critical, 
         fmt_metric='{value} clients using this router')
